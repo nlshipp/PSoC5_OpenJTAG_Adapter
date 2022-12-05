@@ -76,6 +76,18 @@ char Bin_Buf[17];
 char *Tap_Desc[16] = {"TestLogicReset", "RunTestIdle", "Sel-DR", "Cap-DR",   "Shift-DR", "Exit1-DR", "Pause-DR", "Exit2-DR",
                       "Update-DR",      "Sel-IR",      "Cap-IR", "Shift-IR", "Exit1-IR", "Pause-IR", "Exit2-IR", "Update-IR"};
 
+// CLK_JTAG frequency is 76MHz, use approximate divisors
+const static uint16 CLK_DIV_val[] = {
+    2,  //  48MHz - actual 38MHz
+    3,  //  24MHz - actual 25.33MHz
+    6,  //  12MHz - actual 12.66MHz
+    12, //   6MHz - actual  6.33MHz
+    25, //   3MHz - actual  3.04MHz
+    50, // 1.5MHz - actual  1.52MHz
+    101, // 750KHz - actual 752KHz
+    202  // 375KHz - actual 376KHz
+};
+
 /**************************************
  * Function Prototypes
  *************************************/
@@ -151,6 +163,7 @@ uint8 cmd, arg;
 uint8 work_cur_state;
 uint16 CLK_JTAG_div;
 uint8 ret;
+
 void loop() {
     for (;;) {
         uint8 rxData = UART_KitProg_GetChar();
@@ -234,7 +247,7 @@ void loop() {
                 switch (cmd) {
                 case 0: // Set clock divider
                     DP("CMD 0: Set clock divider [%s] ", toBin(arg, 4));
-                    CLK_JTAG_div = 1 << ((arg >> 1) + 0);
+                    CLK_JTAG_div = CLK_DIV_val[arg >> 1];
                     CLK_JTAG_SetDividerValue(CLK_JTAG_div);
                     DP("=>%.1fkHz\n", 76000.0 / CLK_JTAG_div);
                     break;
@@ -295,7 +308,7 @@ void loop() {
                     DP2("=> done\n");
                     break;
                 default:
-                    DP2("CMD Unknown: CMD=>%d ARG=%s\n", cmd, toBin(arg, 4));
+                    DP("CMD Unknown: CMD=>%d ARG=%s\n", cmd, toBin(arg, 4));
                     break;
                 }
             }

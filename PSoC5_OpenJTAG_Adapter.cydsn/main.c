@@ -76,16 +76,16 @@ char Bin_Buf[17];
 char *Tap_Desc[16] = {"TestLogicReset", "RunTestIdle", "Sel-DR", "Cap-DR",   "Shift-DR", "Exit1-DR", "Pause-DR", "Exit2-DR",
                       "Update-DR",      "Sel-IR",      "Cap-IR", "Shift-IR", "Exit1-IR", "Pause-IR", "Exit2-IR", "Update-IR"};
 
-// CLK_JTAG frequency is 76MHz, use approximate divisors
+// CLK_JTAG input frequency is 76MHz, max TCLK freq is half CLK_JTAG, use approximate divisors
 const static uint16 CLK_DIV_val[] = {
-    2,  //  48MHz - actual 38MHz
-    3,  //  24MHz - actual 25.33MHz
-    6,  //  12MHz - actual 12.66MHz
-    12, //   6MHz - actual  6.33MHz
-    25, //   3MHz - actual  3.04MHz
-    50, // 1.5MHz - actual  1.52MHz
-    101, // 750KHz - actual 752KHz
-    202  // 375KHz - actual 376KHz
+    1,  //  48MHz - actual 38.0MHz
+    2,  //  24MHz - actual 19.0MHz
+    3,  //  12MHz - actual 12.66MHz
+    6,  //   6MHz - actual  6.33MHz
+    12, //   3MHz - actual  3.17MHz
+    25, // 1.5MHz - actual  1.52MHz
+    50, // 750KHz - actual 760KHz
+    101 // 375KHz - actual 376KHz
 };
 
 /**************************************
@@ -249,7 +249,7 @@ void loop() {
                     DP("CMD 0: Set clock divider [%s] ", toBin(arg, 4));
                     CLK_JTAG_div = CLK_DIV_val[arg >> 1];
                     CLK_JTAG_SetDividerValue(CLK_JTAG_div);
-                    DP("=>%.1fkHz\n", 76000.0 / CLK_JTAG_div);
+                    DP("=>%.1fkHz\n", 38000.0 / CLK_JTAG_div);
                     break;
                 case 1: // Set target TAP state
                     DP2("CMD 1: Set target TAP state [%s] ", toBin(arg, 4));
@@ -293,16 +293,17 @@ void loop() {
                     }
                     USBFS_push_byte(ret);
                     break;
-                case 7: // Run_Test_Idle Loop
+                case 7: // Run_Test_Idle Loop - arg is 1 to 16 (0000-1111)
                     DP2("CMD 7: Run_Test_Idle Loop [%s] ", toBin(arg, 4));
                     work_cur_state = JTAG_TAP_Get_State() & 0x0f;
                     if (work_cur_state != 1 /* Run_Test_Idle state */) {
                         DP2("=> current state (%d) != 1%d\n", work_cur_state);
                         break;
                     }
+                    arg = arg + 1;
                     while (arg > 0) {
                         work_RTI_count = (arg > 8) ? 8 : arg;
-                        JTAG_TAP_Scan(work_RTI_count, 0, 0);
+                        JTAG_TAP_Scan(work_RTI_count - 1, 0, 0);
                         arg -= work_RTI_count;
                     }
                     DP2("=> done\n");

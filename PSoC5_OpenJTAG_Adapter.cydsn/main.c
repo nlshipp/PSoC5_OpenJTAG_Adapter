@@ -24,6 +24,8 @@ uint8 InEP_buf[BUFFER_SIZE];
 uint8 OutEP_buf[BUFFER_SIZE];
 uint16 InEP_buf_idx = 0;
 uint16 OutEP_buf_len = 0;
+uint8 InEp_Overflow = 0;
+
 volatile int16 USB_Read_Request_Len = 0;
 volatile int16 USB_Write_Request_Len = 0;
 
@@ -73,6 +75,12 @@ uint16 PWM_clock_divider;
 uint8 tPwr = 255;
 char Bin_Buf[17];
 
+#define DBG_serial 0x01
+#define DBG_JTAG_CLK 0x02
+#define DBG_USB_RCV 0x04
+#define DBG_USB_SEND 0x08
+uint8 dbg_pins = 0;
+
 char *Tap_Desc[16] = {"TestLogicReset", "RunTestIdle", "Sel-DR", "Cap-DR",   "Shift-DR", "Exit1-DR", "Pause-DR", "Exit2-DR",
                       "Update-DR",      "Sel-IR",      "Cap-IR", "Shift-IR", "Exit1-IR", "Pause-IR", "Exit2-IR", "Update-IR"};
 
@@ -109,6 +117,9 @@ uint8 work_RTI_count;
 int main() {
     CyGlobalIntEnable;
 
+    dbg_pins = 0;
+    Pin_DBG_Write(dbg_pins);
+    
     /* Start components. */
     USBFS_Start(USBFS_DEVICE, USBFS_5V_OPERATION);
     AMux_Start();
@@ -144,6 +155,7 @@ int main() {
         USB_Read_Request_Len = 0;
         USB_Write_Request_Len = 0;
         InEP_buf_idx = 0;
+        InEp_Overflow = 0;
         OutEP_buf_len = 0;
 
         setStatus(OnLine);
@@ -166,6 +178,9 @@ uint8 ret;
 
 void loop() {
     for (;;) {
+        dbg_pins |= DBG_serial;
+        Pin_DBG_Write(dbg_pins);
+        
         uint8 rxData = UART_KitProg_GetChar();
         switch (rxData) {
         case 'i':
@@ -200,6 +215,9 @@ void loop() {
             JTAG_Set_Shift_Dir(cur_msb_lsb);
             break;
         }
+        
+        dbg_pins &= ~DBG_serial;
+        Pin_DBG_Write(dbg_pins);
 
         /* Check if configuration is changed. */
         if (0u != USBFS_IsConfigurationChanged()) {
@@ -214,8 +232,12 @@ void loop() {
             }
         }
 
+        dbg_pins |= DBG_USB_RCV;
+        Pin_DBG_Write(dbg_pins);
+
         /* Check if data from USB host was received. */
         if (USB_Write_Request_Len != 0) {
+
             setStatus(ActIn);
             OutEP_buf_len = 0;
             receive_total = 0;
@@ -234,6 +256,10 @@ void loop() {
                 OutEP_buf_len += read_len;
                 USBFS_EnableOutEP(OUT_EP_NUM); /* Enable OUT endpoint to receive next data from host. */
             }
+            
+            dbg_pins &= ~DBG_USB_RCV;
+            Pin_DBG_Write(dbg_pins);
+            
             DP2("\r<=Received %d/%d bytes", receive_total, to_be_read);
             if (OutEP_buf_len > to_be_read) {
                 DP2("Drop %d bytes\n", OutEP_buf_len - to_be_read);
@@ -279,6 +305,9 @@ void loop() {
                     JTAG_Set_Shift_Dir((arg & 1) ? LSB_FIRST : MSB_FIRST);
                     break;
                 case 6: // Shift out and Read n Bits
+                    dbg_pins |= DBG_JTAG_CLK;
+                    Pin_DBG_Write(dbg_pins);
+
                     DP2("CMD 6: Shift out and Read n Bits [%s] ", toBin(arg, 4));
                     if (!(i + 1 < OutEP_buf_len)) {
                         DP2("=> 2nd byte is not in the OutEP buffer. i=%d read_len=%d\n", i, read_len + 1);
@@ -287,6 +316,10 @@ void loop() {
                     i++;
                     work_out_bits = OutEP_buf[i];
                     ret = JTAG_TAP_Scan(arg >> 1, work_out_bits, arg & 1 /* last TMS is HIGH(1) or LOW(0) */);
+                    
+                    dbg_pins &= ~DBG_JTAG_CLK;
+                    Pin_DBG_Write(dbg_pins);
+    
                     DP2("%02x ", ret);
                     if (arg & 1) {
                         DP2("LAST\n");
@@ -316,11 +349,20 @@ void loop() {
 
             setStatus(ActOut);
         }
+        dbg_pins &= ~DBG_USB_RCV;
+        Pin_DBG_Write(dbg_pins);
+
+        dbg_pins |= DBG_USB_SEND;
+        Pin_DBG_Write(dbg_pins);
 
         if (USBFS_send() == -1) {
             DP("break loop.\n");
             return;
         }
+
+        dbg_pins &= ~DBG_USB_SEND;
+        Pin_DBG_Write(dbg_pins);
+
         check_VTref();
     }
 }
@@ -345,6 +387,11 @@ static void check_VTref() {
 // Push 1 byte to InEP buffer.
 static void USBFS_push_byte(uint8 b) {
     if (InEP_buf_idx >= BUFFER_SIZE) {
+        if (!InEp_Overflow)
+        {
+            DP("ERROR: InEP_buf overflow\n");
+            InEp_Overflow = 1;
+        }
         return;
     }
     InEP_buf[InEP_buf_idx++] = b;
@@ -368,6 +415,11 @@ static int USBFS_send() {
     }
     DP3("\n");
 
+    if (USB_Read_Request_Len > BUFFER_SIZE)
+    {
+        DP("USBFS_Send buffer underrun\n");
+    }
+    
     to_be_sent = 0;
     total_sent = 0;
     timeout = 1000;
@@ -386,6 +438,7 @@ static int USBFS_send() {
         DP3("Sent %d (%d/%d)\n", to_be_sent, total_sent, InEP_buf_idx);
     } while (to_be_sent == EP_SIZE);
     InEP_buf_idx = 0;
+    InEp_Overflow = 0;
     USB_Read_Request_Len = 0;
     return 0;
 }

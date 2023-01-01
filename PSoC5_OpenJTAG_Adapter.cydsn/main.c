@@ -79,7 +79,7 @@ char Bin_Buf[17];
 #define DBG_JTAG_CLK 0x02
 #define DBG_USB_RCV 0x04
 #define DBG_USB_SEND 0x08
-uint8 dbg_pins = 0;
+volatile uint8 dbg_pins = 0;
 
 char *Tap_Desc[16] = {"TestLogicReset", "RunTestIdle", "Sel-DR", "Cap-DR",   "Shift-DR", "Exit1-DR", "Pause-DR", "Exit2-DR",
                       "Update-DR",      "Sel-IR",      "Cap-IR", "Shift-IR", "Exit1-IR", "Pause-IR", "Exit2-IR", "Update-IR"};
@@ -492,6 +492,9 @@ uint16 wValue, wIndex;
 uint8 USBFS_HandleVendorRqst_Callback() {
     uint8 requestHandled = USBFS_FALSE;
 
+    dbg_pins |= DBG_serial;
+    Pin_DBG_Write(dbg_pins);
+
     wValue = CY_GET_REG16(USBFS_wValue);
     wIndex = CY_GET_REG16(USBFS_wIndex);
 
@@ -514,6 +517,10 @@ uint8 USBFS_HandleVendorRqst_Callback() {
         requestHandled = USBFS_InitNoDataControlTransfer();
         break;
     }
+    
+    dbg_pins &= ~DBG_serial;
+    Pin_DBG_Write(dbg_pins);
+    
     return (requestHandled);
 }
 

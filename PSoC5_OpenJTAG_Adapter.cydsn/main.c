@@ -22,12 +22,13 @@
 #define BUFFER_SIZE (512u)
 uint8 InEP_buf[BUFFER_SIZE];
 uint8 OutEP_buf[BUFFER_SIZE];
-uint16 InEP_buf_idx = 0;
+uint16 InEP_buf_sent = 0;
+uint16 InEP_buf_len = 0;
 uint16 OutEP_buf_len = 0;
-uint8 InEp_Overflow = 0;
+uint8 InEp_buf_overflow = 0;
 
-volatile int16 USB_Read_Request_Len = 0;
-volatile int16 USB_Write_Request_Len = 0;
+volatile uint16 USB_Read_Request_Len = 0;
+volatile uint16 USB_Write_Request_Len = 0;
 
 // Status LED
 // ----------------------------------------------------------------------
@@ -106,7 +107,7 @@ static void USBFS_push_byte(uint8 b);
 static int USBFS_send(void);
 static void check_VTref(void);
 static void Set_Internal_Power(uint8 on_off);
-static char *toBin(uint8 b, int len);
+static char *toBin(uint8 b, uint16 len);
 CY_ISR_PROTO(Slow_Tick_ISR);
 
 /**************************************
@@ -154,8 +155,9 @@ int main() {
         JTAG_Reset();
         USB_Read_Request_Len = 0;
         USB_Write_Request_Len = 0;
-        InEP_buf_idx = 0;
-        InEp_Overflow = 0;
+        InEP_buf_sent = 0;
+        InEP_buf_len = 0;
+        InEp_buf_overflow = 0;
         OutEP_buf_len = 0;
 
         setStatus(OnLine);
@@ -267,7 +269,7 @@ void loop() {
             }
             USB_Write_Request_Len -= to_be_read;
 
-            for (int i = 0; i < OutEP_buf_len; i++) {
+            for (uint16 i = 0; i < OutEP_buf_len; i++) {
                 cmd = OutEP_buf[i] & 0x0f;
                 arg = OutEP_buf[i] >> 4;
                 switch (cmd) {
@@ -384,30 +386,52 @@ static void check_VTref() {
     }
 }
 
-// Push 1 byte to InEP buffer.
+// Push 1 byte to InEP buffer and send a packet if enough data and USB EP is empty
 static void USBFS_push_byte(uint8 b) {
-    if (InEP_buf_idx >= BUFFER_SIZE) {
-        if (!InEp_Overflow)
+    if (InEP_buf_len >= BUFFER_SIZE) {
+        if (!InEp_buf_overflow)
         {
             DP("ERROR: InEP_buf overflow\n");
-            InEp_Overflow = 1;
+            InEp_buf_overflow = 1;
         }
         return;
     }
-    InEP_buf[InEP_buf_idx++] = b;
+    InEP_buf[InEP_buf_len++] = b;
+    
+    // if possible, send a packet back to host without waiting
+    if (USB_Read_Request_Len > 0)
+    {
+        static uint16 packet_size;
+        packet_size = MIN(EP_SIZE, USB_Read_Request_Len);
+        
+        if (InEP_buf_len - InEP_buf_sent >= packet_size)
+        {
+            if (USBFS_IN_BUFFER_EMPTY == USBFS_GetEPState(IN_EP_NUM))
+            {
+                dbg_pins |= DBG_USB_SEND;
+                Pin_DBG_Write(dbg_pins);
+
+                USBFS_LoadInEP(IN_EP_NUM, InEP_buf + InEP_buf_sent, packet_size);
+                InEP_buf_sent += packet_size;
+
+                dbg_pins &= ~DBG_USB_SEND;
+                Pin_DBG_Write(dbg_pins);
+            }
+        }
+    }
 }
 
 // Send InEP buffer.
-int16 to_be_sent = 0;
-int16 total_sent = 0;
+uint16 to_be_sent = 0;
+uint16 total_sent = 0;
 uint16 timeout = 1000;
 static int USBFS_send() {
     if (USB_Read_Request_Len == 0) {
         return 0;
     }
-    DP3("InEP_buf_idx=%d USB_Read_Request_Len=%d\n", InEP_buf_idx, USB_Read_Request_Len);
-    DP3("\n=>Send %d bytes\n", InEP_buf_idx);
-    for (int i = 0; i < InEP_buf_idx; i++) {
+    DP3("InEP_buf_len=%d InEP_buf_sent=%d USB_Read_Request_Len=%d\n", InEP_buf_len, InEP_buf_sent, USB_Read_Request_Len);
+    DP3("\n=>Send %d bytes\n", InEP_buf_len - InEP_buf_sent);
+    for (uint16 i = InEP_buf_sent; i < InEP_buf_len; i++) {
         DP3(" %02x", InEP_buf[i]);
         if ((i % 16) == 15) {
             DP3("\n");
@@ -421,10 +445,10 @@ static int USBFS_send() {
     }
     
     to_be_sent = 0;
-    total_sent = 0;
+    total_sent = InEP_buf_sent;
     timeout = 1000;
     do {
-        to_be_sent = MIN(InEP_buf_idx - total_sent, EP_SIZE);
+        to_be_sent = MIN(InEP_buf_len - total_sent, EP_SIZE);
         DP3("Try to send %d\n", to_be_sent);
         while (USBFS_IN_BUFFER_EMPTY != USBFS_GetEPState(IN_EP_NUM)) {
             CyDelay(1);
@@ -435,10 +459,11 @@ static int USBFS_send() {
         }
         USBFS_LoadInEP(IN_EP_NUM, InEP_buf + total_sent, to_be_sent);
         total_sent += to_be_sent;
-        DP3("Sent %d (%d/%d)\n", to_be_sent, total_sent, InEP_buf_idx);
+        DP3("Sent %d (%d/%d)\n", to_be_sent, total_sent, InEP_buf_len);
     } while (to_be_sent == EP_SIZE);
-    InEP_buf_idx = 0;
-    InEp_Overflow = 0;
+    InEP_buf_len = 0;
+    InEP_buf_sent = 0;
+    InEp_buf_overflow = 0;
     USB_Read_Request_Len = 0;
     return 0;
 }
@@ -472,8 +497,8 @@ static void Set_Internal_Power(uint8 on_off) {
     }
 }
 
-static char *toBin(uint8 b, int len) {
-    for (int i = 0; i < len; i++) {
+static char *toBin(uint8 b, uint16 len) {
+    for (uint16 i = 0; i < len; i++) {
         Bin_Buf[i] = (b & (1 << (len - 1 - i))) ? '1' : '0';
     }
     Bin_Buf[len] = '\0';

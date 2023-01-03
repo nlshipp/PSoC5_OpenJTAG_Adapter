@@ -182,8 +182,8 @@ uint8 ret;
 
 void loop() {
     for (;;) {
-        dbg_pins |= DBG_serial;
-        Pin_DBG_Write(dbg_pins);
+//        dbg_pins |= DBG_serial;
+//        Pin_DBG_Write(dbg_pins);
         
         uint8 rxData = UART_KitProg_GetChar();
         switch (rxData) {
@@ -220,8 +220,8 @@ void loop() {
             break;
         }
         
-        dbg_pins &= ~DBG_serial;
-        Pin_DBG_Write(dbg_pins);
+//        dbg_pins &= ~DBG_serial;
+//        Pin_DBG_Write(dbg_pins);
 
         /* Check if configuration is changed. */
         if (0u != USBFS_IsConfigurationChanged()) {

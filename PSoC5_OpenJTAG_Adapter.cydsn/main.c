@@ -262,7 +262,7 @@ void loop() {
                     
                     read_len = USBFS_GetEPCount(OUT_EP_NUM);
                 }
-                else if (USBFS_OUT_BUFFER_FULL != USBFS_GetEPState(OUT_EP_NUM)) {
+                else if (USBFS_OUT_BUFFER_FULL == USBFS_GetEPState(OUT_EP_NUM)) {
                     /* we have unprocessed data, see if another packet from the host has arrived */
                     read_len = USBFS_GetEPCount(OUT_EP_NUM);
                 }
@@ -301,7 +301,11 @@ void loop() {
                     OutEP_buf_len = to_be_read;
                 }
 
-                for (uint16 i = OutEP_buf_processed; i < OutEP_buf_len; i++) {
+                // JTAG commands available to process?
+                if (OutEP_buf_processed < OutEP_buf_len)
+                {
+                    uint16 i = OutEP_buf_processed;
+                    
                     cmd = OutEP_buf[i] & 0x0f;
                     arg = OutEP_buf[i] >> 4;
                     switch (cmd) {
@@ -381,10 +385,12 @@ void loop() {
                         DP("CMD Unknown: CMD=>%d ARG=%s\n", cmd, toBin(arg, 4));
                         break;
                     }  // case (cmd)
-                } // for (i < OutEP_buf_len)
-                
-                OutEP_buf_processed = OutEP_buf_len - cmd_fragment;
-                
+                    
+                    if (!cmd_fragment)
+                    {
+                        OutEP_buf_processed = i + 1;
+                    }
+                } // if (OutEP_buf_processed < OutEP_buf_len)
             } // while (OutEP_buf_processed < to_be_read) {
 
             if (cmd_fragment) {

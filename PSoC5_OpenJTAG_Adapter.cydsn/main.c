@@ -469,6 +469,8 @@ static void USBFS_push_byte(uint8 b) {
 uint16 to_be_sent = 0;
 uint16 total_sent = 0;
 uint16 timeout = 1000;
+uint16 time_start;
+
 static int USBFS_send() {
     if (USB_Read_Request_Len == 0) {
         return 0;
@@ -491,14 +493,17 @@ static int USBFS_send() {
     to_be_sent = 0;
     total_sent = InEP_buf_sent;
     timeout = 1000;
+    time_start = (Timer_1_ReadCounter() + 1) % 1000;
     do {
         to_be_sent = MIN(InEP_buf_len - total_sent, EP_SIZE);
         DP3("Try to send %d\n", to_be_sent);
         while (USBFS_IN_BUFFER_EMPTY != USBFS_GetEPState(IN_EP_NUM)) {
-            CyDelay(1);
-            if (--timeout == 0) {
-                DP("USBFS_send() timeout.\n");
-                return 0;
+            if (Timer_1_ReadCounter() == time_start)
+            {
+                if (--timeout == 0) {
+                    DP("USBFS_send() timeout.\n");
+                    return 0;
+                }
             }
         }
         USBFS_LoadInEP(IN_EP_NUM, InEP_buf + total_sent, to_be_sent);

@@ -24,6 +24,7 @@ uint8 InEP_buf[BUFFER_SIZE];
 uint8 OutEP_buf[BUFFER_SIZE];
 uint16 InEP_buf_sent = 0;
 uint16 InEP_buf_len = 0;
+uint16 OutEP_buf_processed = 0;
 uint16 OutEP_buf_len = 0;
 uint8 InEp_buf_overflow = 0;
 
@@ -159,7 +160,7 @@ int main() {
         InEP_buf_len = 0;
         InEp_buf_overflow = 0;
         OutEP_buf_len = 0;
-
+        OutEP_buf_processed = 0;
         setStatus(OnLine);
         USBFS_EnableOutEP(OUT_EP_NUM);
         loop();
@@ -175,6 +176,7 @@ uint16 to_be_read;
 uint16 receive_total;
 uint8 cmd, arg;
 uint8 work_cur_state;
+uint8 cmd_fragment;  /* Flag to indicate that last command is split across USB packets */
 uint16 CLK_JTAG_div;
 uint8 ret;
 
@@ -234,120 +236,162 @@ void loop() {
             }
         }
 
-        dbg_pins |= DBG_USB_RCV;
-        Pin_DBG_Write(dbg_pins);
-
         /* Check if data from USB host was received. */
         if (USB_Write_Request_Len != 0) {
-
             setStatus(ActIn);
             OutEP_buf_len = 0;
+            OutEP_buf_processed = 0;
             receive_total = 0;
             to_be_read = USB_Write_Request_Len;
-            while (OutEP_buf_len < to_be_read) {
-                while (USBFS_OUT_BUFFER_FULL != USBFS_GetEPState(OUT_EP_NUM)) {
-                }
-                read_len = USBFS_GetEPCount(OUT_EP_NUM);
-                if (OutEP_buf_len + read_len > BUFFER_SIZE) {
-                    DP3("Received %d/%d bytes\n", receive_total + read_len, to_be_read);
-                    DP3("read_len(%d) exceeds BUFFER_SIZE(%d), drop the excess bytes");
-                    read_len = BUFFER_SIZE - OutEP_buf_len;
-                }
-                USBFS_ReadOutEP(OUT_EP_NUM, OutEP_buf + OutEP_buf_len, read_len);
-                receive_total += read_len;
-                OutEP_buf_len += read_len;
-                USBFS_EnableOutEP(OUT_EP_NUM); /* Enable OUT endpoint to receive next data from host. */
-            }
-            
-            dbg_pins &= ~DBG_USB_RCV;
-            Pin_DBG_Write(dbg_pins);
-            
-            DP2("\r<=Received %d/%d bytes", receive_total, to_be_read);
-            if (OutEP_buf_len > to_be_read) {
-                DP2("Drop %d bytes\n", OutEP_buf_len - to_be_read);
-                OutEP_buf_len = to_be_read;
-            }
-            USB_Write_Request_Len -= to_be_read;
+            cmd_fragment = 0;
 
-            for (uint16 i = 0; i < OutEP_buf_len; i++) {
-                cmd = OutEP_buf[i] & 0x0f;
-                arg = OutEP_buf[i] >> 4;
-                switch (cmd) {
-                case 0: // Set clock divider
-                    DP("CMD 0: Set clock divider [%s] ", toBin(arg, 4));
-                    CLK_JTAG_div = CLK_DIV_val[arg >> 1];
-                    CLK_JTAG_SetDividerValue(CLK_JTAG_div);
-                    DP("=>%.1fkHz\n", 38000.0 / CLK_JTAG_div);
-                    break;
-                case 1: // Set target TAP state
-                    DP2("CMD 1: Set target TAP state [%s] ", toBin(arg, 4));
-                    DP2("=> %s\n", Tap_Desc[arg]);
-                    JTAG_TAP_Move(arg);
-                    break;
-                case 2: // Get target TAP state
-                    DP2("CMD 2: Get target TAP state [%s] ", toBin(arg, 4));
-                    ret = JTAG_TAP_Get_State() | ((tPwr != 0) ? (1 << 5) : 0);
-                    DP2("=>[%s]\n", toBin(ret, 8));
-                    USBFS_push_byte(ret);
-                    break;
-                case 3: // Software reset target TAP
-                    DP("CMD 3: Software reset target TAP\n");
-                    JTAG_TAP_Reset();
-                    break;
-                case 4: // Hardware reset target TAP
-                    DP("CMD 4: Hardware reset target TAP\n");
-                    JTAG_TAP_Reset();
-                    JTAG_Cmd |= 0x80;
-                    CyDelay(1);
-                    JTAG_Cmd &= ~0x80;
-                    JTAG_Reset();
-                    break;
-                case 5: // Set LSB(1)/MSB(0) mode
-                    DP("CMD 5: Set LSB(1)/MSB(0) mode [%s] =>%s\n", toBin(arg, 4), arg ? "LSB" : "MSB");
-                    JTAG_Set_Shift_Dir((arg & 1) ? LSB_FIRST : MSB_FIRST);
-                    break;
-                case 6: // Shift out and Read n Bits
-                    dbg_pins |= DBG_JTAG_CLK;
+            DP3("Incoming JTAG block, %d bytes\n", to_be_read);
+
+            /* Loop until entire block is processed */
+            while ((OutEP_buf_processed + cmd_fragment) < to_be_read) {
+                read_len = 0;
+                if (OutEP_buf_len == (OutEP_buf_processed + cmd_fragment)) {
+                    dbg_pins |= DBG_USB_RCV;
                     Pin_DBG_Write(dbg_pins);
 
-                    DP2("CMD 6: Shift out and Read n Bits [%s] ", toBin(arg, 4));
-                    if (!(i + 1 < OutEP_buf_len)) {
-                        DP2("=> 2nd byte is not in the OutEP buffer. i=%d read_len=%d\n", i, read_len + 1);
-                        break; // 2nd byte is not in the OutEP buffer.
-                    }
-                    i++;
-                    work_out_bits = OutEP_buf[i];
-                    ret = JTAG_TAP_Scan(arg >> 1, work_out_bits, arg & 1 /* last TMS is HIGH(1) or LOW(0) */);
+                    /* No data to process, loop until we get data from USB host */
+                    while (USBFS_OUT_BUFFER_FULL != USBFS_GetEPState(OUT_EP_NUM)) {}
+
+                    dbg_pins &= ~DBG_USB_RCV;
+                    Pin_DBG_Write(dbg_pins);
                     
-                    dbg_pins &= ~DBG_JTAG_CLK;
-                    Pin_DBG_Write(dbg_pins);
-    
-                    DP2("%02x ", ret);
-                    if (arg & 1) {
-                        DP2("LAST\n");
-                    }
-                    USBFS_push_byte(ret);
-                    break;
-                case 7: // Run_Test_Idle Loop - arg is 1 to 16 (0000-1111)
-                    DP2("CMD 7: Run_Test_Idle Loop [%s] ", toBin(arg, 4));
-                    work_cur_state = JTAG_TAP_Get_State() & 0x0f;
-                    if (work_cur_state != 1 /* Run_Test_Idle state */) {
-                        DP2("=> current state (%d) != 1%d\n", work_cur_state);
-                        break;
-                    }
-                    arg = arg + 1;
-                    while (arg > 0) {
-                        work_RTI_count = (arg > 8) ? 8 : arg;
-                        JTAG_TAP_Scan(work_RTI_count - 1, 0, 0);
-                        arg -= work_RTI_count;
-                    }
-                    DP2("=> done\n");
-                    break;
-                default:
-                    DP("CMD Unknown: CMD=>%d ARG=%s\n", cmd, toBin(arg, 4));
-                    break;
+                    read_len = USBFS_GetEPCount(OUT_EP_NUM);
                 }
+                else if (USBFS_OUT_BUFFER_FULL != USBFS_GetEPState(OUT_EP_NUM)) {
+                    /* we have unprocessed data, see if another packet from the host has arrived */
+                    read_len = USBFS_GetEPCount(OUT_EP_NUM);
+                }
+                
+                if (read_len != 0)
+                {
+                    DP3("USB read packet: %d bytes\n", read_len);
+                    
+                    if (OutEP_buf_len + read_len > BUFFER_SIZE) {
+                        // Fixme: buffer overflow error. Should never hit this
+                        // now that USB packets are processed as they arrive 
+                        // rather than attempting to read entire block.
+                        DP("Received %d/%d bytes\n", receive_total + read_len, to_be_read);
+                        DP("read_len(%d) exceeds BUFFER_SIZE(%d), drop the excess bytes", read_len, BUFFER_SIZE);
+                        read_len = BUFFER_SIZE - OutEP_buf_len;
+                    }
+
+                    dbg_pins |= DBG_USB_RCV;
+                    Pin_DBG_Write(dbg_pins);
+
+                    USBFS_ReadOutEP(OUT_EP_NUM, OutEP_buf + OutEP_buf_len, read_len);
+                    receive_total += read_len;
+                    OutEP_buf_len += read_len;
+                    cmd_fragment = 0;
+                    USBFS_EnableOutEP(OUT_EP_NUM); /* Enable OUT endpoint to receive next data from host. */
+                    
+                    dbg_pins &= ~DBG_USB_RCV;
+                    Pin_DBG_Write(dbg_pins);
+                }
+                
+                DP2("\r<=Received %d/%d bytes", receive_total, to_be_read);
+                if (OutEP_buf_len > to_be_read) {
+                    // Fixme: USB EP received more data than current block expects.
+                    // Fix with circular buffer?
+                    DP("Drop %d bytes\n", OutEP_buf_len - to_be_read);
+                    OutEP_buf_len = to_be_read;
+                }
+
+                for (uint16 i = OutEP_buf_processed; i < OutEP_buf_len; i++) {
+                    cmd = OutEP_buf[i] & 0x0f;
+                    arg = OutEP_buf[i] >> 4;
+                    switch (cmd) {
+                    case 0: // Set clock divider
+                        DP("CMD 0: Set clock divider [%s] ", toBin(arg, 4));
+                        CLK_JTAG_div = CLK_DIV_val[arg >> 1];
+                        CLK_JTAG_SetDividerValue(CLK_JTAG_div);
+                        DP("=>%.1fkHz\n", 38000.0 / CLK_JTAG_div);
+                        break;
+                    case 1: // Set target TAP state
+                        DP2("CMD 1: Set target TAP state [%s] ", toBin(arg, 4));
+                        DP2("=> %s\n", Tap_Desc[arg]);
+                        JTAG_TAP_Move(arg);
+                        break;
+                    case 2: // Get target TAP state
+                        DP2("CMD 2: Get target TAP state [%s] ", toBin(arg, 4));
+                        ret = JTAG_TAP_Get_State() | ((tPwr != 0) ? (1 << 5) : 0);
+                        DP2("=>[%s]\n", toBin(ret, 8));
+                        USBFS_push_byte(ret);
+                        break;
+                    case 3: // Software reset target TAP
+                        DP("CMD 3: Software reset target TAP\n");
+                        JTAG_TAP_Reset();
+                        break;
+                    case 4: // Hardware reset target TAP
+                        DP("CMD 4: Hardware reset target TAP\n");
+                        JTAG_TAP_Reset();
+                        JTAG_Cmd |= 0x80;
+                        // Fixme: OpenJTAG spec says that delay should be 'arg' TCLK cycles, not fixed 1ms delay.
+                        CyDelay(1);
+                        JTAG_Cmd &= ~0x80;
+                        JTAG_Reset();
+                        break;
+                    case 5: // Set LSB(1)/MSB(0) mode
+                        DP("CMD 5: Set LSB(1)/MSB(0) mode [%s] =>%s\n", toBin(arg, 4), arg ? "LSB" : "MSB");
+                        JTAG_Set_Shift_Dir((arg & 1) ? LSB_FIRST : MSB_FIRST);
+                        break;
+                    case 6: // Shift out and Read n Bits
+                        dbg_pins |= DBG_JTAG_CLK;
+                        Pin_DBG_Write(dbg_pins);
+
+                        DP2("CMD 6: Shift out and Read n Bits [%s] ", toBin(arg, 4));
+                        if (!(i + 1 < OutEP_buf_len)) {
+                            DP2("=> 2nd byte is not in the OutEP buffer. i=%d read_len=%d\n", i, read_len);
+                            cmd_fragment = 1;
+                            break; // 2nd byte is not in the OutEP buffer.
+                        }
+                        i++;
+                        work_out_bits = OutEP_buf[i];
+                        ret = JTAG_TAP_Scan(arg >> 1, work_out_bits, arg & 1 /* last TMS is HIGH(1) or LOW(0) */);
+                        
+                        dbg_pins &= ~DBG_JTAG_CLK;
+                        Pin_DBG_Write(dbg_pins);
+        
+                        DP2("%02x ", ret);
+                        if (arg & 1) {
+                            DP2("LAST\n");
+                        }
+                        USBFS_push_byte(ret);
+                        break;
+                    case 7: // Run_Test_Idle Loop - arg is 1 to 16 (0000-1111)
+                        DP2("CMD 7: Run_Test_Idle Loop [%s] ", toBin(arg, 4));
+                        work_cur_state = JTAG_TAP_Get_State() & 0x0f;
+                        if (work_cur_state != 1 /* Run_Test_Idle state */) {
+                            DP2("=> current state (%d) != 1%d\n", work_cur_state);
+                            break;
+                        }
+                        arg = arg + 1;
+                        while (arg > 0) {
+                            work_RTI_count = (arg > 8) ? 8 : arg;
+                            JTAG_TAP_Scan(work_RTI_count - 1, 0, 0);
+                            arg -= work_RTI_count;
+                        }
+                        DP2("=> done\n");
+                        break;
+                    default:
+                        DP("CMD Unknown: CMD=>%d ARG=%s\n", cmd, toBin(arg, 4));
+                        break;
+                    }  // case (cmd)
+                } // for (i < OutEP_buf_len)
+                
+                OutEP_buf_processed = OutEP_buf_len - cmd_fragment;
+                
+            } // while (OutEP_buf_processed < to_be_read) {
+
+            if (cmd_fragment) {
+                DP("=> multibyte JTAG operation was split across blocks, cmd dropped\n");
             }
+
+            USB_Write_Request_Len -= to_be_read;
 
             setStatus(ActOut);
         }

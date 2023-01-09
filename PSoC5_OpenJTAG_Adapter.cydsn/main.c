@@ -86,16 +86,16 @@ volatile uint8 dbg_pins = 0;
 char *Tap_Desc[16] = {"TestLogicReset", "RunTestIdle", "Sel-DR", "Cap-DR",   "Shift-DR", "Exit1-DR", "Pause-DR", "Exit2-DR",
                       "Update-DR",      "Sel-IR",      "Cap-IR", "Shift-IR", "Exit1-IR", "Pause-IR", "Exit2-IR", "Update-IR"};
 
-// CLK_JTAG input frequency is 76MHz, max TCLK freq is half CLK_JTAG, use approximate divisors
+// CLK_JTAG input frequency is 72MHz, max TCLK freq is half CLK_JTAG, use approximate divisors
 const static uint16 CLK_DIV_val[] = {
-    1,  //  48MHz - actual 38.0MHz
-    2,  //  24MHz - actual 19.0MHz
-    3,  //  12MHz - actual 12.66MHz
-    6,  //   6MHz - actual  6.33MHz
-    12, //   3MHz - actual  3.17MHz
-    25, // 1.5MHz - actual  1.52MHz
-    50, // 750KHz - actual 760KHz
-    101 // 375KHz - actual 376KHz
+    1,  //  48MHz - actual 36MHz
+    2,  //  24MHz - actual 18MHz
+    3,  //  12MHz
+    6,  //   6MHz
+    12, //   3MHz
+    24, // 1.5MHz
+    48, // 750KHz
+    96  // 375KHz
 };
 
 /**************************************
@@ -288,7 +288,8 @@ void loop() {
                     OutEP_buf_len += read_len;
                     cmd_fragment = 0;
                     USBFS_EnableOutEP(OUT_EP_NUM); /* Enable OUT endpoint to receive next data from host. */
-                    
+
+
                     dbg_pins &= ~DBG_USB_RCV;
                     Pin_DBG_Write(dbg_pins);
                 }
@@ -297,7 +298,7 @@ void loop() {
                 if (OutEP_buf_len > to_be_read) {
                     // Fixme: USB EP received more data than current block expects.
                     // Fix with circular buffer?
-                    DP("Drop %d bytes\n", OutEP_buf_len - to_be_read);
+                    DP("OutEP_BufLen %d, read_len %d, To be read %d, Drop %d bytes\n", OutEP_buf_len, read_len, to_be_read, OutEP_buf_len - to_be_read);
                     OutEP_buf_len = to_be_read;
                 }
 
@@ -313,7 +314,7 @@ void loop() {
                         DP("CMD 0: Set clock divider [%s] ", toBin(arg, 4));
                         CLK_JTAG_div = CLK_DIV_val[arg >> 1];
                         CLK_JTAG_SetDividerValue(CLK_JTAG_div);
-                        DP("=>%.1fkHz\n", 38000.0 / CLK_JTAG_div);
+                        DP("=>%.1fkHz\n", BCLK__BUS_CLK__KHZ / (float)(CLK_JTAG_div * 2));
                         break;
                     case 1: // Set target TAP state
                         DP2("CMD 1: Set target TAP state [%s] ", toBin(arg, 4));

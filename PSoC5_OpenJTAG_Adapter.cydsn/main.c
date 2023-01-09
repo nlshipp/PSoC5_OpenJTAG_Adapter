@@ -284,11 +284,10 @@ void loop() {
                     Pin_DBG_Write(dbg_pins);
 
                     USBFS_ReadOutEP(OUT_EP_NUM, OutEP_buf + OutEP_buf_len, read_len);
+                    // USBFS_ReadOutEP re-enables endpoint in non-DMA mode, no need to call USBFS_EnableOutEP
                     receive_total += read_len;
                     OutEP_buf_len += read_len;
                     cmd_fragment = 0;
-                    USBFS_EnableOutEP(OUT_EP_NUM); /* Enable OUT endpoint to receive next data from host. */
-
 
                     dbg_pins &= ~DBG_USB_RCV;
                     Pin_DBG_Write(dbg_pins);

@@ -3,9 +3,9 @@
 This is an OpenJTAG implementation for [PSoC 5LP Prototyping Kit (CY8CKIT-059)](http://japan.cypress.com/?rid=108038).
 
 - P12_0 --> TDI
-- P12_1 <-- TDO
+- P12_1 --> TMS
 - P12_2 --> TCK
-- P12_3 --> TMS
+- P12_3 <-- TDO
 - P12_4 --- (not used)
 - P12_5 --> TRST (target reset signal, active low.)
 - P1_7  <-- VTref (target voltage reference.)
